@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Box, Button, Card, CardContent, Checkbox, FormControl, InputLabel, MenuItem, Select, Typography } from "@mui/material";
+import { useEffect, useMemo, useState } from "react";
+import { Alert, Box, Button, Card, CardContent, Checkbox, FormControl, InputLabel, MenuItem, Select, Typography } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import ReactECharts from "echarts-for-react";
 import { useApp, type SerializedChart } from "../context/AppContext";
@@ -9,6 +9,10 @@ const toNumber = (v: any) => {
   const n = Number(String(v).replace(",", "."));
   return Number.isFinite(n) ? n : null;
 };
+
+const normalizeFilterValue = (value: any) => String(value ?? "").trim().toLowerCase();
+
+const displayFilterValue = (value: any) => String(value ?? "").trim();
 
 const pearson = (a: number[], b: number[]) => {
   if (a.length !== b.length || a.length < 3) return 0;
@@ -71,8 +75,8 @@ export default function Graficos() {
   const { datos, selectedVariables, isDatasetCleaned, setSerializedCharts } = useApp();
   const navigate = useNavigate();
   const [includeMap, setIncludeMap] = useState<Record<string, boolean>>({});
-  const [yearFilterCol, setYearFilterCol] = useState("");
-  const [yearFilterVal, setYearFilterVal] = useState("");
+  const [filterCol, setFilterCol] = useState("");
+  const [filterVal, setFilterVal] = useState("");
 
   const meta = useMemo(() => {
     return selectedVariables.map((col) => {
@@ -83,22 +87,42 @@ export default function Graficos() {
     });
   }, [datos, selectedVariables]);
 
-  const yearCols = useMemo(() => {
-    return selectedVariables.filter((c) => {
-      const vals = (datos ?? []).slice(0, 100).map((r) => toNumber(r[c])).filter((n): n is number => n !== null);
-      return isYearColumn(c) || (vals.length > 0 && vals.every((n) => n >= 1900 && n <= 2100));
-    });
-  }, [datos, selectedVariables]);
+  const filterCols = useMemo(() => selectedVariables.filter((c) => datos?.some((r) => r[c] !== undefined)), [datos, selectedVariables]);
 
-  const yearOptions = useMemo(() => {
-    if (!yearFilterCol) return [];
-    return Array.from(new Set((datos ?? []).map((r) => String(r[yearFilterCol] ?? "")))).filter(Boolean).sort();
-  }, [datos, yearFilterCol]);
+  const filterOptions = useMemo(() => {
+    if (!filterCol) return [];
+    const counts = new Map<string, { label: string; count: number }>();
+    (datos ?? []).forEach((row) => {
+      const value = normalizeFilterValue(row[filterCol]);
+      if (!value) return;
+      const label = displayFilterValue(row[filterCol]);
+      const current = counts.get(value);
+      counts.set(value, { label: current?.label ?? label, count: (current?.count ?? 0) + 1 });
+    });
+    return [...counts.entries()]
+      .map(([value, option]) => ({ value, label: option.label, count: option.count }))
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" }));
+  }, [datos, filterCol]);
 
   const filteredData = useMemo(() => {
-    if (!yearFilterCol || !yearFilterVal) return datos ?? [];
-    return (datos ?? []).filter((r) => String(r[yearFilterCol]) === yearFilterVal);
-  }, [datos, yearFilterCol, yearFilterVal]);
+    if (!filterCol || !filterVal) return datos ?? [];
+    return (datos ?? []).filter((row) => normalizeFilterValue(row[filterCol]) === filterVal);
+  }, [datos, filterCol, filterVal]);
+
+  const hasEnoughRowsForCorrelation = filteredData.length >= 3;
+  const hasActiveFilter = Boolean(filterCol && filterVal);
+
+  useEffect(() => {
+    if (filterCol && !filterCols.includes(filterCol)) {
+      setFilterCol("");
+      setFilterVal("");
+      return;
+    }
+
+    if (filterVal && !filterOptions.some((option) => option.value === filterVal)) {
+      setFilterVal("");
+    }
+  }, [filterCol, filterCols, filterOptions, filterVal]);
 
   const numericCols = useMemo(() => meta.filter((m) => m.numeric).map((m) => m.col), [meta]);
 
@@ -148,11 +172,11 @@ export default function Graficos() {
       for (let j = 0; j < numericCols.length; j++) data.push([i, j, Number((corrMatrix[i]?.[j] ?? 0).toFixed(3))]);
     }
     return {
-      tooltip: { position: "top" },
+      tooltip: { position: "top", formatter: (params: any) => `${numericCols[params.value[0]]} vs ${numericCols[params.value[1]]}: ${params.value[2]}` },
       xAxis: { type: "category", data: numericCols, axisLabel: { rotate: 35 } },
       yAxis: { type: "category", data: numericCols },
       visualMap: { min: -1, max: 1, calculable: true, orient: "horizontal", left: "center", bottom: 0 },
-      series: [{ type: "heatmap", data, label: { show: true, formatter: "{c}" }, emphasis: { itemStyle: { shadowBlur: 10, shadowColor: "rgba(0,0,0,0.4)" } } }],
+      series: [{ type: "heatmap", data, label: { show: true, formatter: (params: any) => params.value[2] }, emphasis: { itemStyle: { shadowBlur: 10, shadowColor: "rgba(0,0,0,0.4)" } } }],
     };
   }, [numericCols, corrMatrix]);
 
@@ -445,24 +469,43 @@ export default function Graficos() {
 
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Typography sx={{ fontWeight: 700, mb: 1 }}>Filtro por anio</Typography>
+          <Typography sx={{ fontWeight: 700, mb: 1 }}>Filtro por variable</Typography>
           <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}>
             <FormControl size="small">
-              <InputLabel>Columna anio</InputLabel>
-              <Select value={yearFilterCol} label="Columna anio" onChange={(e) => { setYearFilterCol(e.target.value); setYearFilterVal(""); }}>
+              <InputLabel>Variable</InputLabel>
+              <Select value={filterCol} label="Variable" onChange={(e) => { setFilterCol(e.target.value); setFilterVal(""); }}>
                 <MenuItem value="">Sin filtro</MenuItem>
-                {yearCols.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
+                {filterCols.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
               </Select>
             </FormControl>
-            <FormControl size="small" disabled={!yearFilterCol}>
-              <InputLabel>Anio</InputLabel>
-              <Select value={yearFilterVal} label="Anio" onChange={(e) => setYearFilterVal(e.target.value)}>
+            <FormControl size="small" disabled={!filterCol}>
+              <InputLabel>Valor</InputLabel>
+              <Select value={filterVal} label="Valor" onChange={(e) => setFilterVal(e.target.value)}>
                 <MenuItem value="">Todos</MenuItem>
-                {yearOptions.map((y) => <MenuItem key={y} value={y}>{y}</MenuItem>)}
+                {filterOptions.map((option) => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.value} ({option.count} registros)
+                  </MenuItem>
+                ))}
               </Select>
             </FormControl>
           </Box>
-          <Typography variant="caption">Registros usados: {filteredData.length}</Typography>
+          <Typography variant="caption">Registros usados: {filteredData.length} de {(datos ?? []).length}</Typography>
+          {hasActiveFilter && (
+            <Alert severity="info" sx={{ mt: 1 }}>
+              Filtro activo: {filterCol} = {filterOptions.find((option) => option.value === filterVal)?.label ?? filterVal}. Los graficos se recalculan solo con esos registros.
+            </Alert>
+          )}
+          {filteredData.length === 0 && (
+            <Alert severity="error" sx={{ mt: 1 }}>
+              Este filtro no encontro registros. Cambia el valor o limpia el filtro para volver al dataset completo.
+            </Alert>
+          )}
+          {filteredData.length > 0 && !hasEnoughRowsForCorrelation && (
+            <Alert severity="warning" sx={{ mt: 1 }}>
+              Este filtro deja menos de 3 registros. La correlacion necesita al menos 3 datos comparables, por eso el mapa puede verse en 0 y los demas graficos pierden significado.
+            </Alert>
+          )}
         </CardContent>
       </Card>
 
